@@ -41,33 +41,58 @@ env:
 jobs:
   ubuntu-latest-cmake:
     runs-on: ubuntu-latest
-
+    strategy:
+      matrix:
+        include:
+          - build: "noavx"
+            defines: "-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DSD_BUILD_SHARED_LIBS=ON"
+          - build: "avx2"
+            defines: "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON"
+          - build: "avx"
+            defines: "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DSD_BUILD_SHARED_LIBS=ON"
+          - build: "avx512"
+            defines: "-DGGML_NATIVE=OFF -DGGML_AVX512=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON"
+          - build: "cuda12"
+            defines: "-DSD_CUDA=ON -DSD_BUILD_SHARED_LIBS=ON -DCMAKE_CUDA_ARCHITECTURES=90;89;80;75"
+          - build: "vulkan"
+            defines: "-DSD_VULKAN=ON -DSD_BUILD_SHARED_LIBS=ON"
     steps:
       - name: Clone
         id: checkout
         uses: actions/checkout@v3
         with:
           submodules: recursive
-
       - name: Dependencies
         id: depends
         run: |
           sudo apt-get update
           sudo apt-get install build-essential
-
+      - name: Install CUDA Toolkit 12
+        if: ${{ matrix.build == 'cuda12' }}
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: "12.6.2"
+          method: "network"
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust"]'
+      - name: Install Vulkan SDK
+        if: ${{ matrix.build == 'vulkan' }}
+        run: |
+          curl -O https://sdk.lunarg.com/sdk/download/latest/linux/vulkansdk-linux-x86_64-$VULKAN_VERSION.tar.gz 
+          tar -xzf vulkansdk-linux-x86_64-$VULKAN_VERSION.tar.gz
+          export VULKAN_SDK=$(pwd)/$VULKAN_VERSION/x86_64
+          export PATH=$VULKAN_SDK/bin:$PATH
+          export LD_LIBRARY_PATH=$VULKAN_SDK/lib:$LD_LIBRARY_PATH
       - name: Build
         id: cmake_build
         run: |
           mkdir build
           cd build
-          cmake .. -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON
+          cmake .. ${{ matrix.defines }}
           cmake --build . --config Release
-
       - name: Get commit hash
         id: commit
-        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/main' ) || github.event.inputs.create_release == 'true' }}
+        if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
         uses: pr-mpt/actions-commit-hash@v2
-
       - name: Fetch system info
         id: system-info
         run: |
@@ -75,23 +100,21 @@ jobs:
           echo "OS_NAME=`lsb_release -s -i`" >> "$GITHUB_OUTPUT"
           echo "OS_VERSION=`lsb_release -s -r`" >> "$GITHUB_OUTPUT"
           echo "OS_TYPE=`uname -s`" >> "$GITHUB_OUTPUT"
-
       - name: Pack artifacts
         id: pack_artifacts
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
         run: |
           cp ggml/LICENSE ./build/bin/ggml.txt
           cp LICENSE ./build/bin/stable-diffusion.cpp.txt
-          zip -j sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip ./build/bin/*
-
+          zip -j sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-${{ matrix.build }}.zip ./build/bin/*
       - name: Upload artifacts
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
+          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-${{ matrix.build }}.zip
           path: |
-            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}.zip
-
+            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-${{ steps.system-info.outputs.OS_NAME }}-${{ steps.system-info.outputs.OS_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-${{ matrix.build }}.zip
+            
   macOS-latest-cmake:
     runs-on: macos-latest
 
