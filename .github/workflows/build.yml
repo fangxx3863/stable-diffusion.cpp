@@ -73,7 +73,7 @@ jobs:
         with:
           cuda: "12.6.3"
           method: "network"
-          sub-packages: '["nvcc", "cudart", "thrust"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "thrust"]'
       - name: Install Vulkan SDK
         if: ${{ matrix.build == 'vulkan' }}
         run: |
