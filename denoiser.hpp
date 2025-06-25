@@ -4,6 +4,78 @@
 #include "ggml_extend.hpp"
 #include "gits_noise.inl"
 
+/// Continued fraction for incomplete beta (from Numerical Recipes)
+static double incbet_cf(double a, double b, double x) {
+    const int   MAXIT = 100;
+    const double _EPS = 3e-7;
+    const double FPMIN = 1e-30;
+
+    double qab = a + b;
+    double qap = a + 1.0;
+    double qam = a - 1.0;
+    double c   = 1.0;
+    double d   = 1.0 - qab * x / qap;
+    if (std::fabs(d) < FPMIN) d = FPMIN;
+    d = 1.0 / d;
+    double h = d;
+
+    for (int m = 1; m <= MAXIT; ++m) {
+        int m2 = 2*m;
+        // even step
+        double aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+        d = 1.0 + aa * d;
+        if (std::fabs(d) < FPMIN) d = FPMIN;
+        c = 1.0 + aa / c;
+        if (std::fabs(c) < FPMIN) c = FPMIN;
+        d = 1.0 / d;
+        h *= d * c;
+        // odd step
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        d = 1.0 + aa * d;
+        if (std::fabs(d) < FPMIN) d = FPMIN;
+        c = 1.0 + aa / c;
+        if (std::fabs(c) < FPMIN) c = FPMIN;
+        d = 1.0 / d;
+        double del = d * c;
+        h *= del;
+        if (std::fabs(del - 1.0) < _EPS) break;
+    }
+    return h;
+}
+
+/// Regularized incomplete beta I_x(a,b)
+static double incbet(double a, double b, double x) {
+    // Boundary cases
+    if (x <= 0.0) return 0.0;
+    if (x >= 1.0) return 1.0;
+    // Compute front factor: x^a (1-x)^b / (a * B(a,b))
+    double lbeta = std::lgamma(a) + std::lgamma(b) - std::lgamma(a+b);
+    double front = std::exp( a*std::log(x) + b*std::log(1.0-x) - lbeta ) / a;
+    // Use continued fraction when x < (a+1)/(a+b+2), else symmetry
+    if (x < (a+1)/(a+b+2.0)) {
+        return front * incbet_cf(a, b, x);
+    } else {
+        // I_x(a,b) = 1 - I_{1-x}(b,a)
+        return 1.0 - front * incbet_cf(b, a, 1.0 - x);
+    }
+}
+
+/// Inverse CDF via bisection: find x in [0,1] such that incbet(a,b,x) = p
+static double beta_ppf(double p, double a, double b) {
+    const double tol = 1e-6;
+    double lo = 0.0, hi = 1.0, mid = 0.5;
+    while (hi - lo > tol) {
+        mid = 0.5 * (lo + hi);
+        double cdf = incbet(a, b, mid);
+        if (cdf > p) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    return mid;
+}
+
 /*================================================= CompVisDenoiser ==================================================*/
 
 // Ref: https://github.com/crowsonkb/k-diffusion/blob/master/k_diffusion/external.py
@@ -254,6 +326,91 @@ struct KarrasSchedule : SigmaSchedule {
     }
 };
 
+struct SGMUniformSchedule : SigmaSchedule {
+    std::vector<float> get_sigmas(uint32_t n, float sigma_min_in, float sigma_max_in, t_to_sigma_t t_to_sigma_func) override {
+
+        std::vector<float> result;
+        if (n == 0) {
+            result.push_back(0.0f);
+            return result;
+        }
+        result.reserve(n + 1);
+        int t_max = TIMESTEPS -1; 
+        float step = static_cast<float>(t_max) / static_cast<float>(n > 1 ? (n -1) : 1) ;
+        for(uint32_t i=0; i<n; ++i) {
+            result.push_back(t_to_sigma_func(t_max - step * i));
+        }
+        result.push_back(0.0f);
+        return result;
+    }
+};
+
+struct SimpleSchedule : SigmaSchedule {
+    std::vector<float> get_sigmas(uint32_t n, float sigma_min, float sigma_max, t_to_sigma_t t_to_sigma) override {
+        std::vector<float> result_sigmas;
+
+        if (n == 0) {
+            return result_sigmas;
+        }
+
+        result_sigmas.reserve(n + 1);
+
+        int model_sigmas_len = TIMESTEPS; 
+
+        float step_factor = static_cast<float>(model_sigmas_len) / static_cast<float>(n);
+
+        for (uint32_t i = 0; i < n; ++i) {
+
+            int offset_from_start_of_py_array = static_cast<int>(static_cast<float>(i) * step_factor);
+            int timestep_index = model_sigmas_len - 1 - offset_from_start_of_py_array;
+
+            if (timestep_index < 0) {
+                timestep_index = 0;
+            }
+
+            result_sigmas.push_back(t_to_sigma(static_cast<float>(timestep_index)));
+        }
+        result_sigmas.push_back(0.0f);
+        return result_sigmas;
+    }
+};
+
+struct BetaSchedule : SigmaSchedule {
+    double alpha, beta;
+    /// @param a Alpha 参数，Python 里默认 0.6
+    /// @param b Beta  参数，Python 里默认 0.6
+    BetaSchedule(double a = 0.6, double b = 0.6)
+        : alpha(a), beta(b) {}
+
+    std::vector<float> get_sigmas(uint32_t n,
+                                  float /*sigma_min*/,
+                                  float /*sigma_max*/,
+                                  t_to_sigma_t t_to_sigma) override {
+        std::vector<float> sigs;
+        if (n == 0) return sigs;
+
+        const int t_max = TIMESTEPS - 1;
+        sigs.reserve(n + 1);
+
+        int last_t = -1;
+        for (uint32_t i = 0; i < n; ++i) {
+            // 对应 Python: u = 1 - i/steps
+            double u = 1.0 - double(i) / double(n);
+            // 求 Beta 分布的 ppf
+            double x = beta_ppf(u, alpha, beta);
+            // 映射到 timestep index
+            int t = int(std::round(x * t_max));
+            if (t != last_t) {
+                sigs.push_back(t_to_sigma(float(t)));
+                last_t = t;
+            }
+        }
+        // 补最后一个 0
+        sigs.push_back(0.0f);
+        return sigs;
+    }
+};
+
 struct Denoiser {
     std::shared_ptr<SigmaSchedule> schedule                                                  = std::make_shared<DiscreteSchedule>();
     virtual float sigma_min()                                                                = 0;
@@ -265,8 +422,39 @@ struct Denoiser {
     virtual ggml_tensor* inverse_noise_scaling(float sigma, ggml_tensor* latent)             = 0;
 
     virtual std::vector<float> get_sigmas(uint32_t n) {
-        auto bound_t_to_sigma = std::bind(&Denoiser::t_to_sigma, this, std::placeholders::_1);
-        return schedule->get_sigmas(n, sigma_min(), sigma_max(), bound_t_to_sigma);
+        // Check if the current schedule is SGMUniformSchedule
+        if (std::dynamic_pointer_cast<SGMUniformSchedule>(schedule)) {
+            std::vector<float> sigs;
+            sigs.reserve(n + 1);
+
+            if (n == 0) {
+                sigs.push_back(0.0f);
+                return sigs;
+            }
+
+            // Use the Denoiser's own sigma_to_t and t_to_sigma methods
+            float start_t_val = this->sigma_to_t(this->sigma_max());
+            float end_t_val   = this->sigma_to_t(this->sigma_min());
+
+            float dt_per_step;
+            if (n > 0) { 
+                 dt_per_step = (end_t_val - start_t_val) / static_cast<float>(n);
+            } else {
+                 dt_per_step = 0.0f;
+            }
+
+            for (uint32_t i = 0; i < n; ++i) {
+                float current_t = start_t_val + static_cast<float>(i) * dt_per_step;
+                sigs.push_back(this->t_to_sigma(current_t));
+            }
+
+            sigs.push_back(0.0f); 
+            return sigs;
+
+        } else { // For all other schedules, use the existing virtual dispatch
+            auto bound_t_to_sigma = std::bind(&Denoiser::t_to_sigma, this, std::placeholders::_1);
+            return schedule->get_sigmas(n, sigma_min(), sigma_max(), bound_t_to_sigma);
+        }
     }
 };
 
