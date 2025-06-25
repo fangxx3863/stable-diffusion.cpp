@@ -73,7 +73,12 @@ jobs:
         with:
           cuda: "12.6.3"
           method: "network"
-          sub-packages: '["nvcc", "cudart", "libcublas", "libcublas-dev", "thrust"]'
+          sub-packages: '["nvcc", "cudart", "thrust"]'
+      - name: Manually install CuBLAS packages
+        if: ${{ matrix.build == 'cuda12' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcublas-12-6 libcublas-dev-12-6
       - name: Install Vulkan SDK
         if: ${{ matrix.build == 'vulkan' }}
         run: |
