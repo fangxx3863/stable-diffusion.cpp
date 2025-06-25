@@ -77,9 +77,9 @@ jobs:
       - name: Install Vulkan SDK
         if: ${{ matrix.build == 'vulkan' }}
         run: |
-          curl -O https://sdk.lunarg.com/sdk/download/latest/linux/vulkansdk-linux-x86_64-$VULKAN_VERSION.tar.gz 
-          tar -xzf vulkansdk-linux-x86_64-$VULKAN_VERSION.tar.gz
-          export VULKAN_SDK=$(pwd)/$VULKAN_VERSION/x86_64
+          curl -O https://sdk.lunarg.com/sdk/download/1.4.313.0/linux/vulkansdk-linux-x86_64-1.4.313.0.tar.xz
+          tar -xf vulkansdk-linux-x86_64-1.4.313.0.tar.xz
+          export VULKAN_SDK=$(pwd)/1.4.313.0/x86_64
           export PATH=$VULKAN_SDK/bin:$PATH
           export LD_LIBRARY_PATH=$VULKAN_SDK/lib:$LD_LIBRARY_PATH
       - name: Build
