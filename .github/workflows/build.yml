@@ -82,8 +82,10 @@ jobs:
       - name: Install Vulkan SDK
         if: ${{ matrix.build == 'vulkan' }}
         run: |
-          sudo apt-get update
-          sudo apt-get vulkan-sdk
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-1.4.313-noble.list https://packages.lunarg.com/vulkan/1.4.313/lunarg-vulkan-1.4.313-noble.list
+          sudo apt update
+          sudo apt install vulkan-sdk
       - name: Build
         id: cmake_build
         run: |
